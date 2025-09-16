@@ -400,8 +400,18 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, map
     let ref_start = chain.rspan[0];
     let ref_end = chain.rspan[1];
     let padding = read.read_len / 10;
-    let ref_plot_start = ref_start.saturating_sub(padding);
-    let ref_plot_end = ref_end + padding;
+
+    let (ref_plot_start, ref_plot_end) = if mapping_only {
+        let ref_plot_start = ref_start.saturating_sub(padding);
+        let ref_plot_end = ref_end + padding;
+        (ref_plot_start, ref_plot_end)
+    } else {
+        let min_ref_start = ref_start.min(chain.ssw_ref_start);
+        let max_ref_start = ref_start.max(chain.ssw_ref_start);
+        let ref_plot_start = min_ref_start.saturating_sub(padding);
+        let ref_plot_end = max_ref_start + padding + read.read_len;
+        (ref_plot_start, ref_plot_end)
+    };
 
     let filename = format!("chain_score={}_cigar={:.2}.png", chain_idx, chain.score);
     let filepath = read_dir.join(filename.clone());
