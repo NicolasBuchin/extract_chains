@@ -56,6 +56,9 @@ struct Args {
 
     #[arg(short = 'o', default_value = "plots")]
     output: String,
+
+    #[arg(short = 'x')]
+    mapping_only: bool,
 }
 
 fn parse_anchors(bytes: &[u8], i: &mut usize) -> Vec<Anchor> {
@@ -227,7 +230,7 @@ fn parse_cigars(bytes: &[u8], i: &mut usize, chains: &mut [Chain]) {
     }
 }
 
-fn parse_reads(bytes: &[u8], i: &mut usize) -> Option<Read> {
+fn parse_reads(bytes: &[u8], i: &mut usize, mapping_only: bool) -> Option<Read> {
     *i += 7;
     let start = *i;
     while bytes[*i] != b'\n' {
@@ -265,8 +268,16 @@ fn parse_reads(bytes: &[u8], i: &mut usize) -> Option<Read> {
     if chains.is_empty() {
         return None;
     }
-    *i += 8;
-    parse_cigars(bytes, i, &mut chains);
+
+    if mapping_only {
+        for (idx, chain) in chains.iter_mut().enumerate() {
+            chain.considered = idx == 0;
+        }
+    } else {
+        *i += 8;
+        parse_cigars(bytes, i, &mut chains);
+    }
+
     Some(Read {
         name,
         read_len,
@@ -277,7 +288,7 @@ fn parse_reads(bytes: &[u8], i: &mut usize) -> Option<Read> {
     })
 }
 
-fn parse_file(f: &str, n: Option<usize>) -> Vec<Read> {
+fn parse_file(f: &str, n: Option<usize>, mapping_only: bool) -> Vec<Read> {
     let bytes = f.as_bytes();
     let mut reads = Vec::new();
 
@@ -285,7 +296,7 @@ fn parse_file(f: &str, n: Option<usize>) -> Vec<Read> {
 
     while i + 7 < bytes.len() {
         if &bytes[i..i + 7] == b"Query: " {
-            if let Some(read) = parse_reads(bytes, &mut i) {
+            if let Some(read) = parse_reads(bytes, &mut i, mapping_only) {
                 reads.push(read);
                 if let Some(max) = n {
                     if reads.len() >= max {
@@ -315,7 +326,7 @@ fn sanitize_filename<S: AsRef<str>>(name: S) -> String {
         .collect()
 }
 
-fn plot_reads(reads: Vec<Read>, output: &str) {
+fn plot_reads(reads: Vec<Read>, output: &str, mapping_only: bool) {
     create_dir_all(output).unwrap();
 
     reads.par_iter().for_each(|read| {
@@ -325,7 +336,9 @@ fn plot_reads(reads: Vec<Read>, output: &str) {
         read.chains
             .par_iter()
             .enumerate()
-            .for_each(|(chain_idx, chain)| plot_chain(read, chain, chain_idx, &read_dir));
+            .for_each(|(chain_idx, chain)| {
+                plot_chain(read, chain, chain_idx, &read_dir, mapping_only)
+            });
     });
 }
 
@@ -383,14 +396,18 @@ fn parse_cigar_to_path(cigar: &str, ref_start: u32) -> Vec<(u32, u32)> {
     path
 }
 
-fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
+fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, mapping_only: bool) {
     let ref_start = chain.rspan[0];
     let ref_end = chain.rspan[1];
-    let padding = read.read_len / 5;
+    let padding = read.read_len / 10;
     let ref_plot_start = ref_start.saturating_sub(padding);
     let ref_plot_end = ref_end + padding;
 
-    let cigar_str = chain.cigar.clone();
+    let cigar_str = if mapping_only {
+        "mapping_only".to_string()
+    } else {
+        chain.cigar.clone()
+    };
     let filename = format!(
         "chain_score={}_cigar={:.2}_{}.png",
         chain_idx, chain.score, cigar_str
@@ -499,24 +516,26 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
             .unwrap();
     }
 
-    let piecewise_path = parse_cigar_to_path(&chain.cigar, chain.ref_start);
-    if piecewise_path.len() > 1 {
-        chart
-            .draw_series(LineSeries::new(
-                piecewise_path.clone(),
-                PURPLE.mix(0.5).stroke_width(4),
-            ))
-            .unwrap();
-    }
+    if !mapping_only {
+        let piecewise_path = parse_cigar_to_path(&chain.cigar, chain.ref_start);
+        if piecewise_path.len() > 1 {
+            chart
+                .draw_series(LineSeries::new(
+                    piecewise_path.clone(),
+                    PURPLE.mix(0.5).stroke_width(4),
+                ))
+                .unwrap();
+        }
 
-    let ssw_path = parse_cigar_to_path(&chain.ssw_cigar, chain.ssw_ref_start);
-    if ssw_path.len() > 1 {
-        chart
-            .draw_series(LineSeries::new(
-                ssw_path.clone(),
-                ORANGE.mix(0.5).stroke_width(4),
-            ))
-            .unwrap();
+        let ssw_path = parse_cigar_to_path(&chain.ssw_cigar, chain.ssw_ref_start);
+        if ssw_path.len() > 1 {
+            chart
+                .draw_series(LineSeries::new(
+                    ssw_path.clone(),
+                    ORANGE.mix(0.5).stroke_width(4),
+                ))
+                .unwrap();
+        }
     }
 
     chart
@@ -543,25 +562,31 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
         .label(&chain_label)
         .legend(move |(x, y)| PathElement::new([(x, y), (x + 30, y)], chain_color.stroke_width(4)));
 
-    let ssw_label = format!("Orange: SSW path: {}", chain.ssw_cigar);
-    chart
-        .draw_series(std::iter::once(PathElement::new(
-            [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
-            ORANGE.mix(0.5),
-        )))
-        .unwrap()
-        .label(&ssw_label)
-        .legend(|(x, y)| PathElement::new([(x, y), (x + 30, y)], ORANGE.mix(0.5).stroke_width(4)));
+    if !mapping_only {
+        let ssw_label = format!("Orange: SSW path: {}", chain.ssw_cigar);
+        chart
+            .draw_series(std::iter::once(PathElement::new(
+                [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
+                ORANGE.mix(0.5),
+            )))
+            .unwrap()
+            .label(&ssw_label)
+            .legend(|(x, y)| {
+                PathElement::new([(x, y), (x + 30, y)], ORANGE.mix(0.5).stroke_width(4))
+            });
 
-    let piecewise_label = format!("Purple: Piecewise path: {}", chain.cigar);
-    chart
-        .draw_series(std::iter::once(PathElement::new(
-            [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
-            PURPLE.mix(0.5),
-        )))
-        .unwrap()
-        .label(&piecewise_label)
-        .legend(|(x, y)| PathElement::new([(x, y), (x + 30, y)], PURPLE.mix(0.5).stroke_width(4)));
+        let piecewise_label = format!("Purple: Piecewise path: {}", chain.cigar);
+        chart
+            .draw_series(std::iter::once(PathElement::new(
+                [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
+                PURPLE.mix(0.5),
+            )))
+            .unwrap()
+            .label(&piecewise_label)
+            .legend(|(x, y)| {
+                PathElement::new([(x, y), (x + 30, y)], PURPLE.mix(0.5).stroke_width(4))
+            });
+    }
 
     chart
         .configure_series_labels()
@@ -580,7 +605,7 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
 fn main() -> Result<()> {
     let args = Args::parse();
     let file = read_to_string(args.file)?;
-    let reads = parse_file(&file, args.n);
-    plot_reads(reads, &args.output);
+    let reads = parse_file(&file, args.n, args.mapping_only);
+    plot_reads(reads, &args.output, args.mapping_only);
     Ok(())
 }
