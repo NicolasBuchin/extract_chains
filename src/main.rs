@@ -3,7 +3,10 @@ use plotters::{
     chart::{ChartBuilder, SeriesLabelPosition},
     prelude::{BitMapBackend, Cross, IntoDrawingArea, PathElement},
     series::{LineSeries, PointSeries},
-    style::{Color, BLACK, BLUE, GREEN, RED, WHITE},
+    style::{
+        full_palette::{ORANGE, PURPLE},
+        Color, BLACK, BLUE, GREEN, RED, WHITE,
+    },
 };
 use rayon::prelude::*;
 use std::{
@@ -26,8 +29,11 @@ struct Chain {
     rspan: [u32; 2],
     is_revcomp: bool,
     anchors: Vec<Anchor>,
-    cigar: Option<String>,
-    considered: Option<bool>,
+    cigar: String,
+    ref_start: u32,
+    considered: bool,
+    ssw_cigar: String,
+    ssw_ref_start: u32,
 }
 
 #[derive(Debug)]
@@ -160,8 +166,11 @@ fn parse_chains(bytes: &[u8], i: &mut usize) -> Vec<Chain> {
             rspan: [ref_start, ref_end],
             is_revcomp,
             anchors,
-            cigar: None,
-            considered: None,
+            cigar: "".to_owned(),
+            ref_start: 0,
+            considered: false,
+            ssw_cigar: "".to_owned(),
+            ssw_ref_start: 0,
         });
     }
     chains
@@ -179,11 +188,41 @@ fn parse_cigars(bytes: &[u8], i: &mut usize, chains: &mut [Chain]) {
             .unwrap()
             .parse()
             .unwrap();
-        *i += 17;
+        *i += 16;
         let considered = bytes[*i] == b'1';
-        *i += 2;
-        chains[n].cigar = Some(cigar);
-        chains[n].considered = Some(considered);
+        *i += 9;
+        let start = *i;
+        while bytes[*i] != b',' {
+            *i += 1;
+        }
+        let ref_start = std::str::from_utf8(&bytes[start..*i])
+            .unwrap()
+            .parse()
+            .unwrap();
+        *i += 5;
+        let start = *i;
+        while bytes[*i] != b',' {
+            *i += 1;
+        }
+        let ssw_cigar = std::str::from_utf8(&bytes[start..*i])
+            .unwrap()
+            .parse()
+            .unwrap();
+        *i += 12;
+        let start = *i;
+        while bytes[*i] != b')' {
+            *i += 1;
+        }
+        let ssw_ref_start = std::str::from_utf8(&bytes[start..*i])
+            .unwrap()
+            .parse()
+            .unwrap();
+        *i += 1;
+        chains[n].cigar = cigar;
+        chains[n].ref_start = ref_start;
+        chains[n].ssw_cigar = ssw_cigar;
+        chains[n].ssw_ref_start = ssw_ref_start;
+        chains[n].considered = considered;
         n += 1;
     }
 }
@@ -290,6 +329,60 @@ fn plot_reads(reads: Vec<Read>, output: &str) {
     });
 }
 
+fn parse_cigar_to_path(cigar: &str, ref_start: u32) -> Vec<(u32, u32)> {
+    let mut path = Vec::new();
+    let mut ref_pos = ref_start;
+    let mut query_pos = 0u32;
+
+    path.push((ref_pos, query_pos));
+
+    let mut i = 0;
+    let chars: Vec<char> = cigar.chars().collect();
+
+    while i < chars.len() {
+        let mut num_str = String::new();
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            num_str.push(chars[i]);
+            i += 1;
+        }
+
+        if i >= chars.len() {
+            break;
+        }
+
+        let count: u32 = num_str.parse().unwrap_or(0);
+        let operation = chars[i];
+        i += 1;
+
+        match operation {
+            'M' | '=' | 'X' => {
+                ref_pos += count;
+                query_pos += count;
+                path.push((ref_pos, query_pos));
+            }
+            'I' => {
+                query_pos += count;
+                path.push((ref_pos, query_pos));
+            }
+            'D' => {
+                ref_pos += count;
+                path.push((ref_pos, query_pos));
+            }
+            'S' => {
+                query_pos += count;
+                path.push((ref_pos, query_pos));
+            }
+            'N' => {
+                ref_pos += count;
+                path.push((ref_pos, query_pos));
+            }
+            _ => {}
+        }
+    }
+
+    path
+}
+
 fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
     let ref_start = chain.rspan[0];
     let ref_end = chain.rspan[1];
@@ -297,7 +390,7 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
     let ref_plot_start = ref_start.saturating_sub(padding);
     let ref_plot_end = ref_end + padding;
 
-    let cigar_str = chain.cigar.clone().unwrap();
+    let cigar_str = chain.cigar.clone();
     let filename = format!(
         "chain_score={}_cigar={:.2}_{}.png",
         chain_idx, chain.score, cigar_str
@@ -370,7 +463,7 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
             .unwrap();
     }
 
-    let chain_color = if chain.considered.unwrap_or(false) {
+    let chain_color = if chain.considered {
         GREEN.mix(0.5)
     } else {
         RED.mix(0.5)
@@ -406,6 +499,26 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
             .unwrap();
     }
 
+    let piecewise_path = parse_cigar_to_path(&chain.cigar, chain.ref_start);
+    if piecewise_path.len() > 1 {
+        chart
+            .draw_series(LineSeries::new(
+                piecewise_path.clone(),
+                PURPLE.mix(0.5).stroke_width(4),
+            ))
+            .unwrap();
+    }
+
+    let ssw_path = parse_cigar_to_path(&chain.ssw_cigar, chain.ssw_ref_start);
+    if ssw_path.len() > 1 {
+        chart
+            .draw_series(LineSeries::new(
+                ssw_path.clone(),
+                ORANGE.mix(0.5).stroke_width(4),
+            ))
+            .unwrap();
+    }
+
     chart
         .draw_series(std::iter::once(PathElement::new(
             [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
@@ -417,12 +530,8 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
 
     let chain_label = format!(
         "{}: Chain (considered: {})",
-        if chain.considered.unwrap_or(false) {
-            "Green"
-        } else {
-            "Red"
-        },
-        chain.considered.unwrap_or(false)
+        if chain.considered { "Green" } else { "Red" },
+        chain.considered
     );
 
     chart
@@ -434,19 +543,25 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path) {
         .label(&chain_label)
         .legend(move |(x, y)| PathElement::new([(x, y), (x + 30, y)], chain_color.stroke_width(4)));
 
-    let cigar_label = format!(
-        "CIGAR: {}",
-        chain.cigar.as_ref().unwrap_or(&"N/A".to_string())
-    );
-
+    let ssw_label = format!("Orange: SSW path: {}", chain.ssw_cigar);
     chart
         .draw_series(std::iter::once(PathElement::new(
             [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
-            WHITE,
+            ORANGE.mix(0.5),
         )))
         .unwrap()
-        .label(&cigar_label)
-        .legend(|(x, y)| PathElement::new([(x, y), (x + 8, y)], WHITE));
+        .label(&ssw_label)
+        .legend(|(x, y)| PathElement::new([(x, y), (x + 30, y)], ORANGE.mix(0.5).stroke_width(4)));
+
+    let piecewise_label = format!("Purple: Piecewise path: {}", chain.cigar);
+    chart
+        .draw_series(std::iter::once(PathElement::new(
+            [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
+            PURPLE.mix(0.5),
+        )))
+        .unwrap()
+        .label(&piecewise_label)
+        .legend(|(x, y)| PathElement::new([(x, y), (x + 30, y)], PURPLE.mix(0.5).stroke_width(4)));
 
     chart
         .configure_series_labels()
