@@ -403,15 +403,7 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, map
     let ref_plot_start = ref_start.saturating_sub(padding);
     let ref_plot_end = ref_end + padding;
 
-    let cigar_str = if mapping_only {
-        "mapping_only".to_string()
-    } else {
-        chain.cigar.clone()
-    };
-    let filename = format!(
-        "chain_score={}_cigar={:.2}_{}.png",
-        chain_idx, chain.score, cigar_str
-    );
+    let filename = format!("chain_score={}_cigar={:.2}.png", chain_idx, chain.score);
     let filepath = read_dir.join(filename.clone());
 
     let root = BitMapBackend::new(&filepath, (1600, 1600)).into_drawing_area();
