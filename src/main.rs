@@ -399,7 +399,7 @@ fn parse_cigar_to_path(cigar: &str, ref_start: u32) -> Vec<(u32, u32)> {
 fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, mapping_only: bool) {
     let ref_start = chain.rspan[0];
     let ref_end = chain.rspan[1];
-    let padding = read.read_len / 10;
+    let padding = read.read_len / 2;
 
     let (ref_plot_start, ref_plot_end) = if mapping_only {
         let ref_plot_start = ref_start.saturating_sub(padding);
