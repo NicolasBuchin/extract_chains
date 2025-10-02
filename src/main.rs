@@ -413,7 +413,7 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, map
         (ref_plot_start, ref_plot_end)
     };
 
-    let filename = format!("chain_score={}_cigar={:.2}.png", chain_idx, chain.score);
+    let filename = format!("chain_id={}_score={:.2}.png", chain_idx, chain.score);
     let filepath = read_dir.join(filename.clone());
 
     let root = BitMapBackend::new(&filepath, (1600, 1600)).into_drawing_area();
