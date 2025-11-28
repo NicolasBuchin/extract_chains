@@ -258,11 +258,38 @@ fn parse_reads(bytes: &[u8], i: &mut usize, mapping_only: bool) -> Option<Read> 
         .unwrap()
         .parse()
         .unwrap();
-    *i += 29;
-    let fwd_anchors = parse_anchors(bytes, i);
-    *i += 30;
-    let rev_anchors = parse_anchors(bytes, i);
-    *i += 9;
+    *i += 1;
+
+    while &bytes[*i..*i + 12] != b"Anchors for " {
+        *i += 1;
+    }
+    *i += 12;
+
+    let mut fwd_anchors = Vec::new();
+    let mut rev_anchors = Vec::new();
+
+    if &bytes[*i..*i + 16] == b"forward strand [" {
+        *i += 16;
+        fwd_anchors = parse_anchors(bytes, i);
+        *i += 2;
+        while &bytes[*i..*i + 28] != b"Anchors for reverse strand ["
+            && &bytes[*i..*i + 7] != b"Chains["
+        {
+            *i += 1;
+        }
+        if &bytes[*i..*i + 28] == b"Anchors for reverse strand [" {
+            *i += 28;
+            rev_anchors = parse_anchors(bytes, i);
+            *i += 9;
+        } else {
+            *i += 7;
+        }
+    } else {
+        *i += 16;
+        rev_anchors = parse_anchors(bytes, i);
+        *i += 9;
+    }
+
     let mut chains = parse_chains(bytes, i);
     *i += 2;
     if chains.is_empty() {
