@@ -230,6 +230,18 @@ fn parse_cigars(bytes: &[u8], i: &mut usize, chains: &mut [Chain]) {
     }
 }
 
+fn search_until(bytes: &[u8], i: &mut usize, search: &[u8], stop: &[u8]) -> bool {
+    while &bytes[*i..*i + search.len()] != search && &bytes[*i..*i + stop.len()] != stop {
+        *i += 1;
+    }
+    if &bytes[*i..*i + search.len()] == search {
+        *i += search.len();
+        true
+    } else {
+        false
+    }
+}
+
 fn parse_reads(bytes: &[u8], i: &mut usize, mapping_only: bool) -> Option<Read> {
     *i += 7;
     let start = *i;
@@ -260,38 +272,28 @@ fn parse_reads(bytes: &[u8], i: &mut usize, mapping_only: bool) -> Option<Read> 
         .unwrap();
     *i += 1;
 
-    while &bytes[*i..*i + 12] != b"Anchors for " {
-        *i += 1;
-    }
-    *i += 12;
-
     let mut fwd_anchors = Vec::new();
-    let mut rev_anchors = Vec::new();
-
-    if &bytes[*i..*i + 16] == b"forward strand [" {
-        *i += 16;
+    if search_until(
+        bytes,
+        i,
+        b"Anchors for forward strand [",
+        b"Anchors for reverse strand [",
+    ) {
         fwd_anchors = parse_anchors(bytes, i);
         *i += 2;
-        while &bytes[*i..*i + 28] != b"Anchors for reverse strand ["
-            && &bytes[*i..*i + 7] != b"Chains["
-        {
-            *i += 1;
-        }
-        if &bytes[*i..*i + 28] == b"Anchors for reverse strand [" {
-            *i += 28;
-            rev_anchors = parse_anchors(bytes, i);
-            *i += 9;
-        } else {
-            *i += 7;
-        }
-    } else {
-        *i += 16;
-        rev_anchors = parse_anchors(bytes, i);
-        *i += 9;
     }
 
-    let mut chains = parse_chains(bytes, i);
-    *i += 2;
+    let mut rev_anchors = Vec::new();
+    if search_until(bytes, i, b"Anchors for reverse strand [", b"Chains[") {
+        rev_anchors = parse_anchors(bytes, i);
+        *i += 2;
+    }
+
+    let mut chains = Vec::new();
+    if search_until(bytes, i, b"Chains[", b"Done!") {
+        chains = parse_chains(bytes, i);
+        *i += 2;
+    }
     if chains.is_empty() {
         return None;
     }
