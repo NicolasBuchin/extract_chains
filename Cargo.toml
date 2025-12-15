@@ -7,3 +7,4 @@ edition = "2024"
 clap = { version = "4.5", features = ["derive"] }
 plotters = "0.3.7"
 rayon = "1.10"
+indicatif = { version = "0.18", features = ["rayon"] }

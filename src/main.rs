@@ -1,4 +1,5 @@
 use clap::{Parser, ValueHint};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use plotters::{
     chart::{ChartBuilder, SeriesLabelPosition},
     prelude::{BitMapBackend, Cross, IntoDrawingArea, PathElement},
@@ -358,17 +359,31 @@ fn sanitize_filename<S: AsRef<str>>(name: S) -> String {
 fn plot_reads(reads: Vec<Read>, output: &str, mapping_only: bool) {
     create_dir_all(output).unwrap();
 
+    let total_chains: u64 = reads.iter().map(|r| r.chains.len() as u64).sum();
+
+    let pb = ProgressBar::new(total_chains);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:60} {pos}/{len} chains plotted ({eta})",
+        )
+        .unwrap(),
+    );
+
     reads.par_iter().for_each(|read| {
         let safe_name = sanitize_filename(&read.name);
         let read_dir = Path::new(output).join(safe_name);
         create_dir_all(&read_dir).unwrap();
+
         read.chains
             .par_iter()
             .enumerate()
             .for_each(|(chain_idx, chain)| {
-                plot_chain(read, chain, chain_idx, &read_dir, mapping_only)
+                plot_chain(read, chain, chain_idx, &read_dir, mapping_only);
+                pb.inc(1);
             });
     });
+
+    pb.finish();
 }
 
 fn parse_cigar_to_path(cigar: &str, ref_start: u32) -> Vec<(u32, u32)> {
@@ -594,7 +609,7 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, map
         .legend(move |(x, y)| PathElement::new([(x, y), (x + 30, y)], chain_color.stroke_width(4)));
 
     if !mapping_only {
-        let ssw_label = format!("Orange: SSW path: {}", chain.ssw_cigar);
+        let ssw_label = format!("Orange: SSW path:         {}", chain.ssw_cigar);
         chart
             .draw_series(std::iter::once(PathElement::new(
                 [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
@@ -606,7 +621,7 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, map
                 PathElement::new([(x, y), (x + 30, y)], ORANGE.mix(0.5).stroke_width(4))
             });
 
-        let piecewise_label = format!("Purple: Piecewise path: {}", chain.cigar);
+        let piecewise_label = format!("Purple: Piecewise path:   {}", chain.cigar);
         chart
             .draw_series(std::iter::once(PathElement::new(
                 [(ref_plot_start, 0), (ref_plot_start + 1, 0)],
@@ -629,8 +644,6 @@ fn plot_chain(read: &Read, chain: &Chain, chain_idx: usize, read_dir: &Path, map
         .unwrap();
 
     root.present().unwrap();
-
-    println!("{}", filename);
 }
 
 fn main() -> Result<()> {
